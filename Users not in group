@@ -1,0 +1,25 @@
+/* ******** Updated 14/8/18 *********** */
+SELECT
+'</br><a href="%%WWWROOT%%/course/view.php%%Q%%id=' ||  CAST(crs.id AS VARCHAR) || '"></br>' || crs.fullname || '</a></br>' "course",
+us.firstname "firstname",
+us.lastname "lastname",
+us.email AS "email"
+ 
+FROM {course} crs 
+JOIN {enrol} en ON en.courseid = crs.id
+JOIN {user_enrolments} ue ON ue.enrolid = en.id
+JOIN {user} us ON us.id = ue.userid
+ 
+WHERE us.id NOT IN (
+SELECT u.id
+FROM {course}  c
+JOIN {groups} g ON c.id = g.courseid
+JOIN {groups_members}  m ON g.id = m.groupid
+JOIN {user} u ON m.userid = u.id
+WHERE c.id = crs.id
+)
+and crs.shortname like '%' || :course_contains_pattern || '%'  and TO_CHAR(TO_TIMESTAMP(crs.startdate), 'YYYY') = :course_start_year 
+and us.email like '%student%'
+and TO_TIMESTAMP(ue.timeend) < now()
+and ue.status <> 1
+ORDER BY course, lastname, firstname
