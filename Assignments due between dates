@@ -1,0 +1,22 @@
+/* ******** Updated 14/5/18 ***********
+This report lists all assignments due between entered dates.
+You may optionally add a course pattern, to cut down on the course assignments returned */
+
+select a.name "Name",
+     TO_CHAR(TO_TIMESTAMP(a.duedate), 'DD-MM-YYYY HH:MI:SS') "Due",
+     c.shortname "Course",
+     c.fullname "Course name",
+      '<a href="%%WWWROOT%%/mod/assign/view.php%%Q%%id=' || CAST(cmodA.id AS VARCHAR) || '&action=grading">' ||  a.name || '</a>' "Assignment grade link"
+--     cc.name "Category"
+ 
+     from {assign} a
+     inner join {modules} modsA on modsA.name = 'assign'
+     inner join {course_modules} cmodA on cmodA.module = modsA.id and cmodA.instance = a.id and cmodA.visible = 1
+     inner join {course} c on cmodA.course = c.id 
+--     inner join {course_categories} cc on c.category = cc.id
+
+where a.duedate between :first_date and :second_date  
+and c.shortname like '%' || :course_contains_pattern || '%'
+and c.visible = 1
+
+order by "Due", "Course" 
