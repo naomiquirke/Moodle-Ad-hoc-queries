@@ -1,0 +1,26 @@
+/* ******** Updated 31/5/18 ***********
+This reports on how a rubric is currently setup.
+It is a stub of a report
+ */
+/* ******** Rubric Setup Report ******** */
+
+Select
+c.shortname || '</br><a href="%%WWWROOT%%/course/view.php%%Q%%id=' ||  CAST(c.id AS VARCHAR) || '"></br>' || c.fullname || '</a>' "course"
+,gd.name as "Assignment"
+,crit.description "Criterion"
+,levels.definition as "Criterion and Level" 
+,levels.score as "Points"
+
+from {course} c
+JOIN {course_modules} AS cm  ON c.id=cm.course
+JOIN {context} AS ctx ON cm.id = ctx.instanceid
+JOIN {grading_areas} AS garea ON ctx.id = garea.contextid
+JOIN {grading_definitions} AS gd ON garea.id = gd.areaid
+JOIN {gradingform_rubric_criteria} AS crit ON gd.id = crit.definitionid
+JOIN {gradingform_rubric_levels} AS levels ON levels.criterionid = crit.id
+
+where  TO_CHAR(TO_TIMESTAMP(c.startdate), 'YYYY') >= :year  
+and c.shortname like '%' || :course_contains_pattern || '%'
+and gd.name like  '%' || :assignment_name || '%'
+
+order by course, gd.name, crit.sortorder
