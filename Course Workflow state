@@ -1,0 +1,31 @@
+/* ******** Updated 28/5/19 ***********
+This report gives lists of workflow states of all courses in an identified course category  */
+with rawtable as
+(
+SELECT           cc.name as category_name, c.shortname as cshortname,
+                       '<a href="%%WWWROOT%%/course/view.php%%Q%%id=' ||  CAST(c.id AS VARCHAR) || '">' || c.fullname || '</a>' AS course_name,
+                       coalesce(wf.shortname,'No workflow') AS workflow_shortname,
+                       step.name AS stepname,
+                       state.comment as stepcomments,
+                       td.id as tdid, td.task
+                from {course_categories} AS cc0
+                join {course_categories} as cc on cc.path like '%/' || cc0.id || '/%' or cc.id = cc0.id
+                JOIN {course} c  on cc.id = c.category
+                JOIN {context} ctx  ON c.id = ctx.instanceid
+                left join {block_workflow_step_states} state ON ctx.id = state.contextid
+                LEFT JOIN {block_workflow_steps} step ON step.id = state.stepid
+                LEFT JOIN {block_workflow_workflows} wf ON wf.id = step.workflowid
+                left join {block_workflow_step_todos} td on td.stepid = state.stepid
+                left join {block_workflow_todo_done} tdd on td.id = tdd.steptodoid and tdd.stepstateid = state.id
+                
+where 
+   cc0.name like '%' || :category || '%' and 
+   coalesce(td.obsolete,0) = 0
+   and coalesce(tdd.timestamp,0) = 0
+)
+select category_name, cshortname, course_name, workflow_shortname,
+         string_agg(stepname || ' - ' || coalesce(task,'') , '<br>') as steps,
+         string_agg(stepcomments, '<br>') as step_comments
+from rawtable 
+group by category_name, cshortname, course_name, workflow_shortname
+order by category_name, cshortname
