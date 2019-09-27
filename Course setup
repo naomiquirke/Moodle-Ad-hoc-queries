@@ -1,0 +1,85 @@
+/* ******** Updated 27/8/19 ***********
+This report identifies items particularly of interest to those setting up courses, with links to activities.
+The date parameters constrain the start dates of the courses displayed.
+The course pattern constrains the courses displayed */
+/* ******** Course setup report ******** */
+
+Select
+   c.shortname ||  '</br><a href="%%WWWROOT%%/course/view.php%%Q%%id=' ||  CAST(c.id AS VARCHAR) || '"></br>' || c.fullname || '</a></br></br>Visibility: ' || case when c.visible = 1 then 'Visible' else 'Hidden' end  || '</br>Opens: ' ||  TO_CHAR(TO_TIMESTAMP(c.startdate), 'DD/MM/YY') || '</br>Closes: ' ||  TO_CHAR(TO_TIMESTAMP(c.enddate), 'DD/MM/YY') "Course"
+
+ , 'Created time: ' || TO_CHAR(TO_TIMESTAMP(c.timecreated), 'DD/MM/YY') ||  '</br>Artena:' || c.idnumber  || '</br><a href="%%WWWROOT%%/course/edit.php%%Q%%id=' ||  CAST(c.id AS VARCHAR) || '">Settings</a>'  "Settings"
+
+  , '<a href="%%WWWROOT%%/course/index.php%%Q%%categoryid=' || CAST(cc.id AS VARCHAR) || '">' || cc.name || '</a>' "Category name"
+
+  , '<a href="%%WWWROOT%%/grade/edit/tree/calculation.php%%Q%%courseid=' || c.id || '&id=' || gi.id || '&gpr_type=edit&gpr_plugin=tree&gpr_courseid=' ||  c.id || '">Grades calculation</a></br>' || coalesce( sqq.extensions || '</br></br>' , '' )  ||  coalesce( sq1.assign_info , '' )  "Assignments"
+
+  ,sq2.quiz_info "Quiz names and due dates"
+  ,sq3.forum_info "Forum names"
+
+  , coalesce(attend || '</br></br>' ,'') || '<a href="%%WWWROOT%%/user/index.php%%Q%%id=' ||  CAST(c.id AS VARCHAR) || '">Enrolled users</a></br></br>' || sqg.groups_and_groupings "Users, group and groupings" 
+
+ , gi.calculation "Grade calculation"
+
+from {course} c
+   inner join {course_categories} cc on cc.id = c.category
+   left join (select a.course, string_agg( '<a href="%%WWWROOT%%/mod/assign/view.php%%Q%%id=' || CAST(cmod.id AS VARCHAR) || '">' || a.name || '</a>' || --- '</br>' || gi.id || 
+  case a.duedate when 0 then ' ' else '</br>due ' || TO_CHAR(TO_TIMESTAMP(a.duedate), 'DD/MM/YY') end || 
+  '</br>' || 'group mode: ' || case when cmod.groupmode = 0 then 'none' when cmod.groupmode = 1 then 'separate' else 'visible' end || 
+  coalesce('</br>' || 'grouping: ' || gr.name,'')  || 
+  '</br>',  ' </br> ' order by a.duedate) "assign_info"
+     from {assign} a
+     inner join {modules} mods on mods.name = 'assign'
+     inner join {course_modules} cmod on cmod.instance = a.id and cmod.visible = 1 and cmod.module = mods.id 
+     left JOIN {grade_items} AS gi ON gi.iteminstance = a.id
+     left join {groupings} gr on cmod.groupingid = gr.id
+     group by a.course
+   ) sq1 on sq1.course = c.id
+
+   left join (select q.course, string_agg(
+    '<a href="%%WWWROOT%%/mod/quiz/view.php%%Q%%id=' || CAST(cmod.id AS VARCHAR) || '">' || q.name || '</a></br>' ||
+-- gi.id || ' '  || gi.timecreated || '</br>' ||
+    case q.timeclose when 0 then ' ' else '</br>due ' ||  TO_CHAR(TO_TIMESTAMP(q.timeclose), 'DD/MM/YY') || '</br>' end , ' </br> ') "quiz_info"
+     from {quiz} q 
+     inner join {modules} mods on mods.name = 'quiz'
+     inner join {course_modules} cmod on cmod.instance = q.id and cmod.visible = 1 and cmod.module = mods.id 
+--     left JOIN {grade_items} AS gi ON gi.iteminstance = q.id
+     group by q.course
+   ) sq2 on sq2.course = c.id
+
+   left join  (select f.course, string_agg('<a href="%%WWWROOT%%/mod/forum/view.php%%Q%%f=' || CAST(f.id AS VARCHAR) || '">' || f.name || '</a>'  || '</br>' || 'group mode: ' || case when cmod.groupmode = 0 then 'none' when cmod.groupmode = 1 then 'separate' else 'visible' end || coalesce('</br>' || 'grouping: ' || gr.name,'')  || '</br>' , ' </br> ') "forum_info"
+     from {forum} f 
+     inner join {modules} mods on mods.name = 'forum'
+     inner join {course_modules} cmod on cmod.instance = f.id and cmod.visible = 1 and cmod.module = mods.id 
+     left join {groupings} gr on cmod.groupingid = gr.id
+     group by f.course
+   ) sq3 on sq3.course = c.id     
+
+   left join  (select g.courseid, string_agg(g.name || coalesce(  ': ' || sqgr.gcluster,'') ,  '</br></br>' ) "groups_and_groupings"
+   from {groups} g
+      left join (select gg.groupid, string_agg(gr.name, ', ') "gcluster"
+          from {groupings_groups} gg
+          inner join {groupings} gr on gg.groupingid = gr.id
+          group by gg.groupid
+        ) sqgr on g.id = sqgr.groupid
+     group by g.courseid
+     ) sqg on sqg .courseid = c.id
+
+left join (select att.course, '<a href="%%WWWROOT%%/mod/attendance/manage.php%%Q%%id=' ||  CAST(cmod.id AS VARCHAR) || '&view=5">Attendance</a>' "attend"
+     from {attendance} att 
+     inner join {modules} mods on mods.name = 'attendance'
+     inner join {course_modules} cmod on cmod.instance = att.id and cmod.visible = 1 and cmod.module = mods.id 
+   ) sqa on c.id = sqa.course
+
+left join (select quest.course, '<a href="%%WWWROOT%%/mod/questionnaire/view.php%%Q%%id=' || CAST(cmod.id AS VARCHAR) || '">Extension form</a>' "extensions"
+     from {questionnaire} quest 
+     inner join {modules} mods on mods.name = 'questionnaire'
+     inner join {course_modules} cmod on cmod.instance = quest.id and cmod.visible = 1 and cmod.module = mods.id 
+     where strpos(quest.name , 'Online form to request') = 1
+   ) sqq on c.id = sqq.course
+
+left join {grade_items} gi on c.id = gi.courseid and gi.itemtype = 'course'
+
+where c.startdate between :first_date and :second_date  
+and c.shortname like '%' || :course_contains_pattern || '%'
+
+order by "Category name", "Course" 
