@@ -1,0 +1,206 @@
+/* ******** Updated 18/04/19 ***********
+Warning this query is quite intensive so make sure you run query with small categories or at off-peak times.
+This report gives all grades / progress and latest submission dates for all the students in each course in a category.  
+The "dayspastdue" takes into account any individual extensions given for students.  It is negative if the assignment is not yet due, or if the assignment was submitted before the due date.  It is positive if the assignment was overdue, or if it hasn't yet been submitted and it is past due.
+
+The category is entered as a number - which you can get from the address bar when you go into a category in Moodle.  
+
+The best way of using the data: 
+
+Download the file as a csv, 
+open in Excel, 
+and then with one of the cells highlighted, 
+select menu 'Insert'
+select the third icon 'Table'
+Now you can filter or sort on any column, to compare course, student, assignment data.  */
+
+with courseStudents as
+(
+select cc.id as category, c.id as course, u.id as student, u.email, u.firstname, u.lastname, c.shortname as coursename, c.fullname
+FROM {course_categories} AS cc 
+JOIN {course} AS c ON cc.id = c.category
+JOIN {context} AS ctx ON c.id = ctx.instanceid
+JOIN {role_assignments} AS ra ON ra.contextid = ctx.id and ra.roleid = 5 --student, this info is stored in table role
+JOIN {user} AS u ON u.id = ra.userid
+)
+
+, studentInGroups as
+(
+select cc.id as category, c.id as course, cmod.module, cmod.instance,  cmod.completionexpected, gg.id as groupingID,  gg.name || ' ' || g.name::text as groupname, gm.userid as student
+FROM {course_categories} AS cc 
+JOIN {course} AS c ON cc.id = c.category
+join {groupings} as gg on gg.courseid = c.id 
+join {course_modules} as cmod on cmod.course = c.id and cmod.groupingid = gg.id  
+        -- in cmod, groupmode = 1 =>separate groups, also when there is a groupingid => separate groups. cmod.module =12 for quiz
+join {groups} as g on g.courseid = c.id 
+join {groupings_groups} as ggg on ggg.groupingid = gg.id and ggg.groupid = g.id 
+join {groups_members} as gm on gm.groupid = g.id
+)
+
+, studentInNoGroups as
+(
+select s.category, s.course, cmod.module, cmod.instance,  cmod.completionexpected, 0 as groupingID,  'No group'::text as groupname, s.student
+from {course} AS c
+join {course_modules} as cmod on cmod.course = c.id and cmod.groupingid = 0
+join courseStudents  as s on c.id = s.course
+)
+
+, studentMods as
+(
+select sm.* 
+from 
+  (select * from studentInNoGroups  
+  union all select * from studentInGroups ) sm
+)
+
+, modsInfo as
+(
+select s.* , gs.finalgrade, 
+gs.timemodified AS GradeUpdated,
+coalesce(auo.duedate, auf.extensionduedate, 0) AS ExtensionDateDue
+--use the override due date if there is one, if not then use the extension due date if there is one or use 0
+from studentMods as s
+left JOIN {grade_items} AS gi ON gi.courseid = s.course and gi.iteminstance = s.instance 
+left JOIN {grade_grades} AS gs ON gi.id = gs.itemid and gs.userid = s.student
+left JOIN {assign_user_flags} AS auf ON auf.assignment = s.instance and auf.userid = s.student and auf.extensionduedate > 0 --only include if an extension is set
+left JOIN {assign_overrides} AS auo ON auo.assignid = s.instance and auo.userid = s.student and auo.duedate > 0 --only include if an extension is set)
+)
+
+, studentQuizzes as
+(
+select s.* , 
+ '=hyperlink("%%WWWROOT%%/mod/quiz/report.php%%Q%%id=' ||  cmod.id || '&mode=overview","' || q.name || '")' as activity_link,
+q.name, 
+q.timeclose as duedate,
+coalesce(qg.timemodified, 0) AS SubmissionModified,
+coalesce( ROUND(s.finalgrade,2), ROUND(qg.grade,2) , 0 ) AS Grade    --Final grade in gradebook, or in module grades or empty.
+
+from modsInfo as s
+join {modules} as mod on s.module = mod.id and mod.name = 'quiz'
+JOIN {quiz} AS q ON q.course = s.course and q.id=s.instance 
+join {course_modules} cmod on cmod.instance = q.id and cmod.module = mod.id --and cmod.visible = 1 
+left JOIN {quiz_grades} AS qg ON qg.quiz = s.instance and qg.userid = s.student
+left JOIN {quiz_attempts} AS qa ON qa.quiz= s.instance and qa.userid = s.student and qa.attempt=1
+)
+
+, studentAssignments as
+(
+select s.* , 
+'=hyperlink("%%WWWROOT%%/mod/assign/view.php%%Q%%id=' ||  cmod.id || '&action=grading","' || a.name || '")' as activity_link,
+a.name,
+a.duedate,
+coalesce(asub.timemodified, 0) AS SubmissionModified,
+coalesce( ROUND(s.finalgrade,2), ROUND(ag.grade,2) , 0 ) AS Grade    --Final grade in gradebook, or in module grades or empty.
+
+from modsInfo as s
+join {modules} as mod on s.module = mod.id and mod.name = 'assign'
+JOIN {assign} AS a ON a.course = s.course and a.id=s.instance 
+join {course_modules} cmod on cmod.instance = a.id and cmod.module = mod.id --and cmod.visible = 1 
+left JOIN {assign_grades} AS ag ON ag.assignment = s.instance and ag.userid = s.student
+left JOIN {assign_submission} AS asub ON asub.assignment = s.instance and asub.userid = s.student and asub.latest=1 and asub.status = 'submitted'
+)
+
+, firstjoin as
+(
+select
+sa.category, sa.course, sa.activity_link,
+sa.name ||  case when sa.duedate > 0 then ' due ' ||  TO_CHAR(TO_TIMESTAMP(sa.duedate), 'DD/MM/YYYY') else '' end as name,
+ sa.student, 
+ case when ( sa.duedate > 0 and sa.SubmissionModified = 0) then
+     round( ( EXTRACT(EPOCH FROM now())  - greatest(sa.duedate, sa.ExtensionDateDue) )/86400)::text --86400 seconds in a day
+  when (sa.duedate > 0 and sa.SubmissionModified > 0) then round( (sa.SubmissionModified - greatest(sa.duedate, sa.ExtensionDateDue))/86400 )::text
+  else ''
+  end as daysFromDue, 
+ sa.SubmissionModified,
+sa.Grade::text,
+--sa.GradeUpdated,
+greatest(sa.duedate, sa.ExtensionDateDue) as DateDue
+
+from 
+  (select * from studentQuizzes 
+  union all select * from studentAssignments) sa
+)
+
+, courseGroups as
+(
+select c.id, gm.userid, ' group= ' || string_agg(g.name,' ') as groupname
+from  {course} AS c
+join {groups} as g on g.courseid = c.id 
+join {groups_members} as gm on gm.groupid = g.id
+group by c.id, gm.userid
+)
+
+, finalCourseGrades as
+(
+select cs.category, cs.course
+, '=hyperlink("%%WWWROOT%%/grade/report/user/index.php%%Q%%id=' ||  cs.course || '&userid=' || cs.student || '","' || 'Grade summary' || '")' as activity_link
+,'Course Total' || coalesce(cg.groupname,'')::text as name
+, cs.student
+, ''::text as daysFromDue
+, coalesce(gg.timemodified, 0) as SubmissionModified
+, ROUND(gg.finalgrade,2)::text AS Grade
+-- , 0 AS GradeUpdated
+, 0 as DateDue
+
+FROM courseStudents as cs
+left join courseGroups  as cg on cg.id = cs.course and cg.userid = cs.student
+left JOIN {grade_items} AS gi ON gi.courseid = cs.course and gi.itemtype = 'course'
+left JOIN {grade_grades} AS gg ON gi.id = gg.itemid and gg.userid = cs.student
+)
+
+, studentPosts as
+(
+select fd.forum, fp.userid, count(fp.userid) as fpCount, min(fp.created) as discussionPosted
+from {forum_discussions} fd
+left join {forum_posts} fp on fd.id = fp.discussion
+group by fd.forum, fp.userid
+ )
+
+, studentDiscussions as
+(
+select fd.forum, fd.userid, count(fd.userid) as fdCount
+from {forum_discussions} fd
+    group by fd.forum, fd.userid
+ )
+
+, studentForums as
+(
+select s.category, s.course,
+ '=hyperlink("%%WWWROOT%%/mod/forum/view.php%%Q%%f=' || f.id || '","' || f.name || '")' as activity_link,
+f.name ||  case when s.completionexpected > 0 then ' due ' ||  TO_CHAR(TO_TIMESTAMP(s.completionexpected), 'DD/MM/YYYY') else '' end as name,
+s.student, 
+--s.group,
+ case when ( s.completionexpected > 0 and sp.discussionPosted = 0) then
+     round( (EXTRACT(EPOCH FROM now())  - s.completionexpected )/86400)::text --86400 seconds in a day
+  when (s.completionexpected > 0 and sp.discussionPosted > 0) then round( (sp.discussionPosted - s.completionexpected)/86400 )::text
+  else ''
+  end as daysFromDue, 
+sp.discussionPosted AS SubmissionModified,
+coalesce(sd.fdCount,0) || 'D/' || coalesce(sp.fpCount,0) || 'P' AS Grade,
+--0 AS GradeUpdated,
+s.completionexpected as DateDue
+ 
+from studentMods as s
+join {modules} as mod on s.module = mod.id and mod.name = 'forum'
+join {forum} as f on f.id = s.instance and f.type <> 'news'
+left join studentDiscussions sd on sd.forum = f.id and sd.userid = s.student
+left join studentPosts sp on sp.forum = f.id and sp.userid = s.student
+)
+
+, secondjoin as
+(
+select * from
+ (select * from firstjoin
+  union all select * from finalCourseGrades
+  union all select * from studentForums ) fg
+)
+
+select c.coursename, c.fullname, name, activity_link, c.email, c.firstname, c.lastname,
+sj.daysfromdue as DaysPastDue, 
+case when DateDue = 0 then '' else  TO_CHAR(TO_TIMESTAMP(DateDue), 'DD/MM/YYYY HH24:MI') end as StudentDueDate ,
+case when sj.SubmissionModified = 0 then '' else  TO_CHAR(TO_TIMESTAMP(sj.SubmissionModified), 'DD/MM/YYYY HH24:MI') end as submitted,
+sj.grade
+from secondjoin sj
+join courseStudents c on c.course = sj.course and c.student = sj.student and c.category = sj.category
+where c.category = :category
+order by c.category, c.coursename, sj.datedue, sj.name, c.email
