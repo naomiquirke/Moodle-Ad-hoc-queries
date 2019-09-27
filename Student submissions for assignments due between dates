@@ -1,0 +1,89 @@
+/* ******** Updated 14/5/18 *********** 
+This identifies all assignments due between dates, and then identifies whether a student has submitted for the assignment or not.
+A grade of -1 is listed if the assignment hasn't yet received a grade.
+A grade of 0 is listed if the student has not yet submitted - or they have received a 0 grade from the tutor! (In the latter case the Updated Date will be given.)
+*/
+
+with assignment_list as (
+select a.id "assignment",
+     a.duedate,
+--     TO_CHAR(TO_TIMESTAMP(a.duedate), 'DD-MM-YYYY HH:MI:SS') "due",
+     c.id "course",
+     cmodA.id as cmod_id,
+     cmodA.groupingid,
+     cmodA.instance,
+     c.shortname "cname",
+      '<a href="%%WWWROOT%%/mod/assign/view.php%%Q%%id=' || CAST(cmodA.id AS VARCHAR) || '&action=grading">' ||  a.name || '</a>'  as Assignment_grade_link
+ 
+     from {assign} a
+     inner join {modules} modsA on modsA.name = 'assign'
+     inner join {course_modules} cmodA on cmodA.module = modsA.id and cmodA.instance = a.id and cmodA.visible = 1
+        -- in cmod, groupmode = 1 =>separate groups, also when there is a groupingid => separate groups. 
+     inner join {course} c on cmodA.course = c.id 
+
+where a.duedate between :first_date and :second_date  
+and c.shortname like '%' || :course_contains_pattern || '%'
+and c.visible = 1
+)
+
+, students_with_group as
+(
+select al.*,  group_info.groupingname || ' ' || group_info.groupname::text as groupname, coalesce(group_info.groupstudent,studentid,0) as student
+FROM assignment_list al
+left join (select gg.courseid, gg.id as groupid, gg.name as groupingname, g.name as groupname, gm.userid as groupstudent, ctx.instanceid
+              from {groupings} gg 
+              join {groups} as g on g.courseid = gg.courseid 
+              join {groupings_groups} as ggg on ggg.groupingid = gg.id and ggg.groupid = g.id 
+              join {groups_members} as gm on gm.groupid = g.id
+             JOIN {role_assignments} AS ra ON ra.userid=gm.userid and ra.roleid = 5 --student, this info is stored in table role
+             join {context} AS ctx ON ra.contextid = ctx.id 
+    ) group_info on group_info.courseid = al.course and al.groupingid = group_info.groupid and  al.course = group_info.instanceid
+left join (select ctx.instanceid, u.id as studentid
+             from {context} AS ctx 
+             JOIN {role_assignments} AS ra ON ra.contextid = ctx.id and ra.roleid = 5 --student, this info is stored in table role
+             JOIN {user} AS u ON u.id = ra.userid
+   ) nogroup_info ON al.course = nogroup_info.instanceid and al.groupingid = 0
+)
+
+, modsInfo as
+(
+select  
+gs.timemodified AS Updated_Date,
+coalesce(auo.duedate, auf.extensionduedate) AS Extension_Date, 
+      --use the override due date if there is one, if not then use the extension due date if there is one or use 0
+asub.timemodified AS Submission_Modified_Date,
+coalesce( ROUND(gs.finalgrade,2), ROUND(ag.grade,2) , 0 ) AS Grade,
+     --Final grade in gradebook, or in module grades or empty.
+s.*, u.firstname, u.lastname
+from students_with_group as s
+join {user} u on u.id = s.student
+left JOIN {grade_items} AS gi ON gi.courseid = s.course and gi.iteminstance = s.instance 
+left JOIN {grade_grades} AS gs ON gi.id = gs.itemid and gs.userid = s.student
+left JOIN {assign_user_flags} AS auf ON auf.assignment = s.instance and auf.userid = s.student and auf.extensionduedate > 0 --only include if an extension is set
+left JOIN {assign_overrides} AS auo ON auo.assignid = s.instance and auo.userid = s.student and auo.duedate > 0 --only include if an extension is set)
+left JOIN {assign_grades} AS ag ON ag.assignment = s.instance and ag.userid = s.student
+left JOIN {assign_submission} AS asub ON asub.assignment = s.instance and asub.userid = s.student and asub.latest=1 and asub.status = 'submitted'
+
+)
+
+
+select distinct
+cname as Course_name,
+Assignment_grade_link,
+duedate as Due_Date,
+Groupname,
+firstname ,
+lastname ,
+Extension_Date,
+Submission_Modified_Date,
+Grade,
+Updated_Date,
+case 
+    when Grade > 0 and Submission_Modified_Date is null then 'Waiting for resubmit'
+    when Submission_Modified_Date is null and to_timestamp(coalesce(Extension_Date,duedate)) > localtimestamp then 'Not yet due'
+    when Grade = -1 and Submission_Modified_Date is not null then 'Waiting for grading'
+    when Grade > 0 then 'Graded'
+    else 'Overdue'
+end as Comment
+from modsInfo
+order by course_name, assignment_grade_link, groupname, firstname, lastname
