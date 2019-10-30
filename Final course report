@@ -1,0 +1,124 @@
+/* ******** Updated 31/10/19 ***********
+This gives summary information about each course in a particular category.  Final grades, enrolments and extensions.  */
+
+with courseList as
+(
+select distinct c.id,  c.shortname,  c.fullname
+from {course_categories} AS cc0
+join {course_categories} as cc on cc.path like '%/' || cc0.id || '/%' or cc.id = cc0.id  --so we get subcategories as determined by whether a category has cc0 on its path
+JOIN {course} AS c ON cc.id = c.category
+where cc0.id = :category
+)
+, courseStudents as
+(
+select c.*, u.id as student
+from courseList c
+JOIN {context} AS ctx ON c.id = ctx.instanceid and ctx.contextlevel = 50 --course
+JOIN {role_assignments} AS ra ON ra.contextid = ctx.id and ra.roleid = 5 --student, this info is stored in table role
+JOIN {user} AS u ON u.id = ra.userid  
+)
+
+, coursemods as
+(
+select c.*, cmod.module, cmod.instance
+FROM courseStudents AS c 
+join {course_modules} as cmod on cmod.course = c.id   
+)
+
+
+, modsInfo as
+(
+select cm.* , gs.finalgrade, 
+gs.timemodified AS GradeUpdated,
+coalesce(auo.duedate, auf.extensionduedate, 0.0) AS ExtensionDateDue
+--use the override due date if there is one, if not then use the extension due date if there is one or use 0
+from coursemods as cm
+left JOIN {grade_items} AS gi ON gi.courseid = cm.id and gi.iteminstance = cm.instance 
+left JOIN {grade_grades} AS gs ON gi.id = gs.itemid and gs.userid = cm.student
+left JOIN {assign_user_flags} AS auf ON auf.assignment = cm.instance and auf.userid = cm.student and auf.extensionduedate > 0 --only include if an extension is set
+left JOIN {assign_overrides} AS auo ON auo.assignid = cm.instance and auo.userid = cm.student and auo.duedate > 0 --only include if an extension is set)
+)
+
+, studentQuizzes as
+(
+select s.* , 
+q.name, 
+q.timeclose as duedate,
+coalesce(qg.timemodified, 0.0) AS SubmissionModified,
+coalesce( ROUND(s.finalgrade,2), ROUND(qg.grade,2) , 0 ) AS Grade    --Final grade in gradebook, or in module grades or empty.
+
+from modsInfo as s
+JOIN {quiz} AS q ON q.course = s.id and q.id=s.instance 
+left JOIN {quiz_grades} AS qg ON qg.quiz = s.instance and qg.userid = s.student
+left JOIN {quiz_attempts} AS qa ON qa.quiz= s.instance and qa.userid = s.student and qa.attempt=1
+)
+
+, studentAssignments as
+(
+select s.* , 
+a.name,
+a.duedate,
+coalesce(asub.timemodified, 0.0) AS SubmissionModified,
+coalesce( ROUND(s.finalgrade,2), ROUND(ag.grade,2) , 0 ) AS Grade    --Final grade in gradebook, or in module grades or empty.
+
+from modsInfo as s
+JOIN {assign} AS a ON a.course = s.id and a.id=s.instance 
+left JOIN {assign_grades} AS ag ON ag.assignment = s.instance and ag.userid = s.student
+left JOIN {assign_submission} AS asub ON asub.assignment = s.instance and asub.userid = s.student and asub.latest=1 and asub.status = 'submitted'
+)
+
+, firstjoin as
+(
+select
+	sa.id, sa.shortname, sa.fullname, sa.student, --sa.module, sa.instance,
+	case when ( sa.duedate < extract(epoch from now()) and sa.SubmissionModified = 0) then  --not yet submitted and due date has passed
+			1 --overdue
+		when (sa.duedate > 0 and sa.SubmissionModified > 0) then   --submitted and there is a due date, and (next) submission time is later than personal due date
+			case when sa.SubmissionModified > greatest(sa.duedate, sa.ExtensionDateDue) then 1 else 0 end
+		else 0
+		end as overdue, 
+	case when sa.ExtensionDateDue = 0 then 0 else 1 end as extended
+from 
+	(select * from studentQuizzes 
+	union all select * from studentAssignments) sa
+)
+
+, assessments as
+(
+select fj.id, fj.shortname, fj.fullname, fj.student
+	, max(overdue) as students_overdue
+	, sum(overdue) as assessments_overdue
+	, max(extended) as students_extended
+	, sum(extended) as assessments_extended
+from firstjoin fj
+group by fj.id, fj.shortname, fj.fullname, fj.student
+)
+
+, finalCourseGrades as
+(
+select ass.*
+	, case when gg.finalgrade is null or gg.finalgrade = 0 then 1 else 0 end as DNC
+	, case when gg.finalgrade >= 50.0 or gg.finalgrade = 0.9 or gg.finalgrade=0.6 or gg.finalgrade = 0.8 then 1 else 0 end as pass  --passing grade, or ungraded pass, or conceded pass or aegrotat pass
+	, case when gg.finalgrade >= 0.1 and gg.finalgrade < 0.2 then 1 else 0 end as IP -- IP, PXT,YTC,XTN,SUP
+	, case when (gg.finalgrade >=1 and gg.finalgrade < 50) or gg.finalgrade = 0.4 then 1 else 0 end as fail
+	, case when gg.finalgrade in (0.2, 0.7, 0.3) then 1 else 0 end other
+FROM assessments as ass
+left JOIN {grade_items} AS gi ON gi.courseid = ass.id and gi.itemtype = 'course'
+left JOIN {grade_grades} AS gg ON gi.id = gg.itemid and gg.userid = ass.student
+)
+
+select fc.shortname
+        , '<a href="%%WWWROOT%%/course/view.php%%Q%%id=' ||  CAST(fc.id AS VARCHAR) || '"></br>' || fc.fullname || '</a>' as fullname
+	, count(student) as enrolments
+	, sum(students_overdue) as num_students_overdue
+	, sum(assessments_overdue) as tot_assessments_overdue
+	, sum(students_extended) as num_students_extended
+	, sum(assessments_extended) as tot_assessments_extended
+	, sum(DNC) as tot_DNC
+	, sum(pass) as tot_pass
+	, sum(IP) as tot_IP
+	, sum(fail) as tot_fail
+	, sum(other) as tot_other
+from finalCourseGrades fc
+group by fc.shortname, fc.fullname, fc.id
+order by fc.shortname
